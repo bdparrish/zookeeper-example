@@ -55,7 +55,7 @@ public class Barrier implements Watcher, Closeable {
      */
     void startZK() throws IOException {
         zk = new ZooKeeper(hostPort, 15000, this);
-        LOG.debug("barrier starter");
+        LOG.debug("barrier started");
     }
 
     /**
