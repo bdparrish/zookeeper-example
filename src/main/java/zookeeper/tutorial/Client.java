@@ -1,4 +1,4 @@
-package zookeeper.barrier;
+package zookeeper.tutorial;
 
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.data.Stat;
@@ -9,30 +9,28 @@ import java.io.IOException;
 import java.util.Random;
 
 /**
- * Created by bparrish on 10/22/15.
+ * Created by benjamin on 10/24/15.
  */
 public class Client implements Watcher {
     private static final Logger LOG = LoggerFactory.getLogger(Client.class);
 
-    private Random random = new Random(System.currentTimeMillis());
-    private static String CLIENT_ZNODE;
-    private ZooKeeper zk;
     private final String hostPort;
-    private final String serverId = Integer.toHexString( random.nextInt() );
+    private ZooKeeper zk;
     private volatile boolean connected = false;
     private volatile boolean expired = false;
 
     public Client(final String hostPort) {
         this.hostPort = hostPort;
-        CLIENT_ZNODE = "/clients/" + serverId;
     }
 
-    public void startZK() throws IOException {
-        this.zk = new ZooKeeper(this.hostPort, 15000, this);
+    void startZK() throws IOException {
+        zk = new ZooKeeper(hostPort, 15000, this);
+        LOG.debug("client started");
     }
 
-    public void stopZK() throws InterruptedException {
-        this.zk.close();
+    void stopZK() throws InterruptedException, IOException {
+        zk.close();
+        LOG.debug("client closed");
     }
 
     public void process(WatchedEvent e) {
@@ -40,15 +38,17 @@ public class Client implements Watcher {
         if(e.getType() == Event.EventType.None){
             switch (e.getState()) {
                 case SyncConnected:
+                    LOG.debug("connected to zookeeper");
                     connected = true;
                     break;
                 case Disconnected:
+                    LOG.debug("disconnected from zookeeper");
                     connected = false;
                     break;
                 case Expired:
                     expired = true;
                     connected = false;
-                    LOG.error("Session expiration");
+                    LOG.error("session expiration");
                 default:
                     break;
             }
@@ -57,7 +57,7 @@ public class Client implements Watcher {
 
     public void createClientParent() {
         zk.create("/clients",
-                serverId.getBytes(),
+                "clients-id".getBytes(),
                 ZooDefs.Ids.OPEN_ACL_UNSAFE,
                 CreateMode.PERSISTENT,
                 createClientParentCallback,
@@ -82,8 +82,10 @@ public class Client implements Watcher {
     };
 
     public void createClient() {
-        zk.create(CLIENT_ZNODE,
-                serverId.getBytes(),
+        int randomInt = new Random(System.currentTimeMillis()).nextInt();
+        String hex = Integer.toHexString(randomInt);
+        zk.create("/clients/" + hex,
+                hex.getBytes(),
                 ZooDefs.Ids.OPEN_ACL_UNSAFE,
                 CreateMode.EPHEMERAL,
                 clientCreateCallback,
@@ -101,10 +103,10 @@ public class Client implements Watcher {
                     barrierExists();
                     break;
                 default:
-                    LOG.error("Something went wrong when adding client to barrier.",
+                    LOG.error("something went wrong when adding client to barrier.",
                             KeeperException.create(KeeperException.Code.get(rc), path));
             }
-            LOG.info("Added " + serverId + " to the barrier.");
+            LOG.info("added client to the barrier.");
         }
     };
 
@@ -118,7 +120,8 @@ public class Client implements Watcher {
     Watcher barrierExistsWatcher = new Watcher() {
         public void process(WatchedEvent e) {
             if (e.getType() == Event.EventType.NodeDeleted) {
-                performAction();
+//                performAction();
+                LOG.info("barrier removed - client taking action");
             }
         }
     };
@@ -126,8 +129,8 @@ public class Client implements Watcher {
     AsyncCallback.StatCallback barrierExistsCallback = new AsyncCallback.StatCallback() {
         public void processResult(int rc, String path, Object ctx, Stat stat) {
             switch (KeeperException.Code.get(rc)) {
-                case NONODE:
-                    performAction();
+                case CONNECTIONLOSS:
+                    barrierExists();
                     break;
             }
         }
@@ -138,68 +141,17 @@ public class Client implements Watcher {
             LOG.info("{}", System.currentTimeMillis());
             Thread.sleep(1000);
             LOG.info("{}", System.currentTimeMillis());
-            deleteClient();
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
     }
 
-    public void deleteClient() {
-        LOG.info("Deleting client " + CLIENT_ZNODE);
-        zk.delete(CLIENT_ZNODE,
-                -1,
-                deleteClientCallback,
-                null);
-    }
-
-    AsyncCallback.VoidCallback deleteClientCallback = new AsyncCallback.VoidCallback(){
-        public void processResult(int rc, String path, Object ctx){
-            switch (KeeperException.Code.get(rc)) {
-                case CONNECTIONLOSS:
-                    zk.delete(path, -1, deleteClientCallback, null);
-                    break;
-                case OK:
-                    LOG.info("Successfully deleted " + path);
-                    createClient();
-                    break;
-                default:
-                    LOG.error("Something went wrong here, " +
-                            KeeperException.create(KeeperException.Code.get(rc), path));
-            }
-        }
-    };
-
-    /**
-     * Check if this client is connected.
-     *
-     * @return boolean ZooKeeper client is connected
-     */
     boolean isConnected() {
         return connected;
     }
 
-    /**
-     * Check if the ZooKeeper session has expired.
-     *
-     * @return boolean ZooKeeper session has expired
-     */
     boolean isExpired() {
         return expired;
-    }
-
-    /**
-     * Closes the ZooKeeper session.
-     *
-     * @throws IOException
-     */
-    public void close() throws IOException {
-        if(zk != null) {
-            try{
-                zk.close();
-            } catch (InterruptedException e) {
-                LOG.warn( "Interrupted while closing ZooKeeper session.", e );
-            }
-        }
     }
 
     public static void main(String[] args) throws IOException, InterruptedException {
@@ -207,16 +159,19 @@ public class Client implements Watcher {
 
         client.startZK();
 
-        while (!client.connected) {
+        while (!client.isConnected()) {
+            System.out.println("sleeping for connection...");
             Thread.sleep(100);
         }
 
         client.createClientParent();
 
-        while (!client.expired) {
-            Thread.sleep(1000);
+        while (!client.isExpired()) {
+            System.out.println("sleeping for expiration...");
+            Thread.sleep(10000);
         }
 
         client.stopZK();
     }
+
 }

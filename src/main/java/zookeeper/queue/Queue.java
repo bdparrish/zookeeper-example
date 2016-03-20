@@ -1,4 +1,4 @@
-package zookeeper.barrier;
+package zookeeper.queue;
 
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.data.Stat;
@@ -8,16 +8,10 @@ import org.slf4j.LoggerFactory;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.Random;
+import java.util.UUID;
 
-/**
- * Created by bparrish on 10/22/15.
- */
-public class Barrier implements Watcher, Closeable {
-    private static final Logger LOG = LoggerFactory.getLogger(Barrier.class);
-
-    enum BarrierStates { BARRIER_SET, BARRIER_NOT_SET };
-
-    private static volatile BarrierStates state = BarrierStates.BARRIER_NOT_SET;
+public class Queue implements Watcher, Closeable {
+    private static final Logger LOG = LoggerFactory.getLogger(Queue.class);
 
     /*
      * A master process can be either running for
@@ -26,7 +20,7 @@ public class Barrier implements Watcher, Closeable {
      * master.
      */
 
-    public static String BARRIER_ZNODE = "/barrier";
+    public static String QUEUE_ZNODE = "/_QUEUE_";
 
     private Random random = new Random(this.hashCode());
     private ZooKeeper zk;
@@ -40,7 +34,7 @@ public class Barrier implements Watcher, Closeable {
      *
      * @param hostPort
      */
-    Barrier(String hostPort) {
+    Queue(String hostPort) {
         this.hostPort = hostPort;
     }
 
@@ -51,7 +45,7 @@ public class Barrier implements Watcher, Closeable {
      */
     void startZK() throws IOException {
         zk = new ZooKeeper(hostPort, 15000, this);
-        LOG.debug("barrier started");
+        LOG.debug("queue started");
     }
 
     /**
@@ -61,7 +55,7 @@ public class Barrier implements Watcher, Closeable {
      */
     void stopZK() throws InterruptedException, IOException {
         zk.close();
-        LOG.debug("barrier closed");
+        LOG.debug("queue closed");
     }
 
     public void process(WatchedEvent e) {
@@ -69,93 +63,44 @@ public class Barrier implements Watcher, Closeable {
         if(e.getType() == Event.EventType.None){
             switch (e.getState()) {
                 case SyncConnected:
-                    LOG.debug("connected to zookeeper");
                     connected = true;
                     break;
                 case Disconnected:
-                    LOG.debug("disconnected from zookeeper");
                     connected = false;
                     break;
                 case Expired:
                     expired = true;
                     connected = false;
-                    LOG.error("session expiration");
+                    LOG.error("Session expiration");
                 default:
                     break;
             }
         }
     }
 
-    public void setBarrier() {
-        LOG.info("Setting barrier");
-        zk.create(BARRIER_ZNODE,
+    public void createQueue() {
+        LOG.info("Creating queue");
+        zk.create(QUEUE_ZNODE,
                 serverId.getBytes(),
                 ZooDefs.Ids.OPEN_ACL_UNSAFE,
-                CreateMode.PERSISTENT,
-                barrierCreateCallback,
+                CreateMode.EPHEMERAL,
+                queueCreateCallback,
                 null);
     }
 
-    AsyncCallback.StringCallback barrierCreateCallback = new AsyncCallback.StringCallback() {
+    AsyncCallback.StringCallback queueCreateCallback = new AsyncCallback.StringCallback() {
         public void processResult(int rc, String path, Object ctx, String name) {
             switch (KeeperException.Code.get(rc)) {
                 case CONNECTIONLOSS:
-                    setBarrier();
+                    createQueue();
                     break;
                 case OK:
                 case NODEEXISTS:
-                    state = BarrierStates.BARRIER_SET;
-                    barrierExists();
+                    LOG.info("Queue exists.");
                     break;
                 default:
-                    state = BarrierStates.BARRIER_NOT_SET;
                     LOG.error("Something went wrong when setting barrier.",
                             KeeperException.create(KeeperException.Code.get(rc), path));
-            }
-            LOG.info("Barrier is " + (state == BarrierStates.BARRIER_SET ? "" : "not ") + "set");
-        }
-    };
-
-    public void barrierExists() {
-        zk.exists(BARRIER_ZNODE,
-                barrierExistsWatcher,
-                barrierExistsCallback,
-                null);
-    }
-
-    AsyncCallback.StatCallback barrierExistsCallback = new AsyncCallback.StatCallback() {
-        public void processResult(int rc, String path, Object ctx, Stat stat) {
-            LOG.debug("Code = {}", KeeperException.Code.get(rc));
-            switch (KeeperException.Code.get(rc)) {
-                case CONNECTIONLOSS:
-                    barrierExists();
-
-                    break;
-                case OK:
-                    if (state == BarrierStates.BARRIER_NOT_SET) setBarrier();
-                    break;
-                case NONODE:
-                    state = BarrierStates.BARRIER_NOT_SET;
-                    setBarrier();
-                    LOG.info("Set the barrier again.");
-
-                    break;
-            }
-        }
-    };
-
-    Watcher barrierExistsWatcher = new Watcher() {
-        public void process(WatchedEvent e) {
-            if(e.getType() == Event.EventType.NodeDeleted) {
-                LOG.info("Barrier deleted");
-                assert BARRIER_ZNODE.equals( e.getPath() );
-
-                try {
-                    Thread.sleep(100);
-                    setBarrier();
-                } catch (InterruptedException ie) {
-                    LOG.error("failed to sleep", ie);
-                }
             }
         }
     };
@@ -194,21 +139,21 @@ public class Barrier implements Watcher, Closeable {
     }
 
     public static void main(String[] args) throws IOException, InterruptedException {
-        Barrier barrier = new Barrier(args[0]);
+        Queue queue = new Queue(args[0]);
 
-        barrier.startZK();
+        queue.startZK();
 
-        while(!barrier.isConnected()){
+        while(!queue.isConnected()){
             Thread.sleep(100);
         }
 
-        barrier.setBarrier();
+        queue.createQueue();
 
-        while(!barrier.isExpired()){
+        while(!queue.isExpired()){
             Thread.sleep(1000);
         }
 
-        barrier.stopZK();
+        queue.stopZK();
     }
 
 }
